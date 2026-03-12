@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from openai.types.chat import ChatCompletionMessageToolCall
@@ -13,7 +14,7 @@ def validate_tool_call(
     tool_call: ChatCompletionMessageToolCall,
     *,
     allowed_tools: set[str],
-    required_args: dict[str, type | tuple[type, ...]],
+    required_args: Mapping[str, type | tuple[type, ...]],
 ) -> tuple[str, dict[str, Any]]:
     """
     Validate a tool call object from the model response.

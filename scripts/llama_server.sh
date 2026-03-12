@@ -26,7 +26,7 @@ fi
 # Model
 # ---------------------------------------------------------------------------
 HF_REPO="Qwen/Qwen3-4B-GGUF"
-HF_FILE="qwen3-4b-q4_k_m.gguf"   # Q4_K_M: good balance of quality and size (~2.6GB)
+HF_FILE="Qwen3-4B-Q4_K_M.gguf"   # Q4_K_M: good balance of quality and size (~2.6GB)
 
 # ---------------------------------------------------------------------------
 # Server
