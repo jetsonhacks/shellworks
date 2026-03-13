@@ -1,0 +1,17 @@
+# configs/model_profiles/nemotron3_nano.toml
+#
+# NVIDIA Nemotron-3-Nano-30B-A3B-NVFP4 served via vLLM on Jetson Thor.
+#
+# Reasoning control: request_kwargs
+#   Nemotron uses the nano_v3 reasoning parser (--reasoning-parser nano_v3
+#   in scripts/nemotron3-thor.sh). Reasoning is toggled via enable_thinking
+#   in extra_body, the same kwargs path as Qwen3 on vLLM.
+#   Verify this against the Nemotron vLLM documentation if behaviour
+#   differs in practice — the kwargs path may need adjustment.
+#
+# Tool call parser: qwen3_coder (set in scripts/nemotron3-thor.sh)
+
+name                    = "nemotron3_nano"
+canonical_model         = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
+reasoning_control       = "request_kwargs"
+reasoning_kwargs_path   = "extra_body.chat_template_kwargs.enable_thinking"

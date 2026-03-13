@@ -430,6 +430,7 @@ dependencies = [
     { name = "openai" },
     { name = "pytest" },
     { name = "python-dotenv" },
+    { name = "tomli" },
 ]
 
 [package.metadata]
@@ -437,6 +438,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.26.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "tomli", specifier = ">=2.4.0" },
 ]
 
 [[package]]

@@ -8,11 +8,6 @@ Usage:
     uv run shellworks
 
 
-Environment variables (these are kept in a .env file):
-    VLLM_BASE_URL   Base URL of the vLLM server   (default: http://localhost:8000/v1)
-    VLLM_API_KEY    API key for the vLLM server   (default: not-needed)
-    VLLM_MODEL      Model name to use             (default: local-model)
-
 This file is intentionally thin. All the lesson logic lives in:
     shellworks/orchestrator/minimal_tool_calling.py
 """

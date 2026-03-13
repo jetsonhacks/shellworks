@@ -8,6 +8,7 @@ dependencies = [
     "openai>=2.26.0",
     "pytest>=9.0.2",
     "python-dotenv>=1.2.2",
+    "tomli>=2.4.0",
 ]
 
 [project.scripts]

@@ -2,19 +2,25 @@
 directory: src/shellworks/orchestrator/
 file:      minimal_tool_calling.py
 
-The main file for Lesson 1.
+The main orchestrator for Lesson 1 / 1.1.
 
-Read this file to understand how the whole lesson works. The supporting
-modules handle infrastructure so this file stays focused:
+Lesson 1.1 changes
+------------------
+The orchestrator no longer knows about:
+  - server backends (vllm vs llama.cpp)
+  - base URLs or API keys
+  - reasoning suppression mechanics (extra_body, prompt pre-fills)
 
-  validation.py   — validate_tool_call(), ValidationError
-  vllm_client.py  — build_client()
-  arithmetic.py   — add_numbers()
+All of that now lives in OpenAICompatibleProvider, which reads from
+LLMEndpoint and ModelProfile at startup. The orchestrator expresses
+intent; the provider realizes it.
+
+The two-pass structure, validation, and tool dispatch are unchanged.
 
 Responsibility: the orchestrator is the sole control authority.
   - It builds messages.
   - It attaches the tool definition.
-  - It calls the LLM server.
+  - It calls the provider.
   - It inspects the response.
   - It validates the tool call.
   - It executes the tool (only after validation).
@@ -32,27 +38,12 @@ Reasoning control
 -----------------
   run_turn accepts a `reasoning` bool (default False).
 
-  Two backends are supported, selected via the LLM_BACKEND environment
-  variable ("vllm" or "llamacpp"). Each uses a different mechanism to
-  suppress thinking when reasoning=False:
+  True  → passes ReasoningIntent "on"  to the provider
+  False → passes ReasoningIntent "off" to the provider
 
-  vllm (Thor):
-    Passes {"chat_template_kwargs": {"enable_thinking": False}} in
-    extra_body. vLLM pre-fills the assistant turn with <think></think>,
-    skipping the reasoning phase at the model level — saving real
-    compute, not just hiding tokens.
-
-  llamacpp (Orin):
-    Injects an assistant message {"role": "assistant",
-    "content": "<think></think>"} into the conversation before the first
-    request, achieving the same pre-fill effect via the message history.
-    llama.cpp ignores extra_body entirely.
-
-  When reasoning=True both backends let the model reason freely. Any
-  thinking text appears in response content alongside tool_calls and is
-  printed to stderr via the [thinking] branch in run_turn.
-
-  The caller decides the mode. No automatic escalation here.
+  The provider translates that intent into the correct mechanism for the
+  active model: prompt markers, request kwargs, both, or neither. The
+  orchestrator never touches those details directly.
 """
 
 from __future__ import annotations
@@ -62,17 +53,13 @@ import sys
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from openai import APIConnectionError
-
-from shellworks.llm.vllm_client import build_client
+from shellworks.llm.provider import OpenAICompatibleProvider, ReasoningIntent
 from shellworks.orchestrator.validation import ValidationError, validate_tool_call
 from shellworks.tools.arithmetic import add_numbers
 
 # ---------------------------------------------------------------------------
 # Tool definition sent to the model
 # ---------------------------------------------------------------------------
-# This is the *metadata* the model uses to understand what tools exist.
-# It is NOT the function. The function lives in tools/arithmetic.py.
 
 TOOL_DEFINITION = {
     "type": "function",
@@ -93,15 +80,12 @@ TOOL_DEFINITION = {
 
 ToolFn = Callable[..., str]
 
-# Allowlist — only these tool names may be dispatched.
 ALLOWED_TOOLS: set[str] = {"add_numbers"}
 
-# Dispatch table — maps allowed names to their Python implementations.
 TOOL_DISPATCH: dict[str, ToolFn] = {
     "add_numbers": add_numbers,
 }
 
-# Argument contract for validate_tool_call.
 ADD_NUMBERS_ARGS: Mapping[str, type | tuple[type, ...]] = {
     "a": (int, float),
     "b": (int, float),
@@ -110,6 +94,11 @@ ADD_NUMBERS_ARGS: Mapping[str, type | tuple[type, ...]] = {
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
+
+# Some models describe a tool call in plain text instead of actually issuing one
+# (e.g. "I would call add_numbers with a=5, b=3"). This instruction prevents that —
+# the orchestrator expects a structured tool call object, not prose about one.
+
 SYSTEM_PROMPT = (
     "You are a precision assistant for the shellworks terminal.\n"
     "\n"
@@ -128,6 +117,7 @@ SYSTEM_PROMPT = (
     "OPERATIONAL ROLE:\n"
     "- You propose actions; the orchestrator executes them.\n"
     "- Ensure your JSON arguments for 'a' and 'b' are strictly numeric.\n"
+    "\n"
     "UNSUPPORTED OPERATIONS:\n"
     "- If the user asks for anything other than addition or subtraction, "
     "decline politely in plain text.\n"
@@ -136,95 +126,15 @@ SYSTEM_PROMPT = (
 )
 
 # ---------------------------------------------------------------------------
-# LLM call helper
-# ---------------------------------------------------------------------------
-
-def _call_llm(
-    client,
-    model: str,
-    backend: str,
-    messages: list[dict[str, Any]],
-    reasoning: bool,
-    debug: bool,
-    label: str,
-    *,
-    include_tools: bool = True,
-) -> Any | None:
-    """
-    Send one request to the LLM server and return the response.
-
-    Owns: connection error handling, backend-specific reasoning kwargs,
-    and debug output. Returns None and prints an orchestrator error on
-    connection failure.
-
-    Parameters
-    ----------
-    backend : str
-        "vllm" or "llamacpp". Controls how thinking suppression is sent.
-    label : str
-        Short name for debug output, e.g. ``"first"`` or ``"second"``.
-    include_tools : bool
-        Whether to advertise tools in this pass.
-    """
-    # vLLM accepts enable_thinking via extra_body.
-    # llama.cpp ignores extra_body, so send an empty dict to keep the
-    # request clean. Thinking suppression for llama.cpp is handled in
-    # run_turn by injecting an assistant pre-fill before the first request.
-    if backend == "vllm":
-        extra_body = {"chat_template_kwargs": {"enable_thinking": reasoning}}
-    else:
-        extra_body = {}
-
-    request: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "extra_body": extra_body,
-    }
-
-    if include_tools:
-        request["tools"] = [TOOL_DEFINITION]
-        request["tool_choice"] = "auto"
-
-    if debug:
-        print(f"[debug] {label} request:", file=sys.stderr)
-        print(
-            json.dumps(
-                {
-                    "model": request["model"],
-                    "messages": [
-                        m.model_dump() if hasattr(m, "model_dump") else m
-                        for m in request["messages"]
-                    ],
-                    "tools": request.get("tools"),
-                    "tool_choice": request.get("tool_choice"),
-                    "extra_body": request["extra_body"],
-                },
-                indent=2,
-                default=str,
-            ),
-            file=sys.stderr,
-        )
-
-    try:
-        response = client.chat.completions.create(**request)
-    except APIConnectionError as exc:
-        _orchestrator_error(
-            f"Could not reach the LLM server ({label} pass).\n  Detail: {exc}"
-        )
-        return None
-
-    if debug:
-        print(f"[debug] {label} response:", file=sys.stderr)
-        print(response.model_dump_json(indent=2), file=sys.stderr)
-
-    return response
-
-
-# ---------------------------------------------------------------------------
 # Core orchestration loop
 # ---------------------------------------------------------------------------
 
-def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> None:
+def run_turn(
+    user_input: str,
+    provider: OpenAICompatibleProvider,
+    reasoning: bool = True,
+    debug: bool = False,
+) -> None:
     """
     Execute one complete user turn.
 
@@ -232,18 +142,35 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
     ----------
     user_input : str
         The user's message.
+    provider : OpenAICompatibleProvider
+        Configured provider for the active endpoint and model.
     reasoning : bool, optional
         Enable thinking mode for this turn (default False).
         Pass True for hard planning, code repair, or multi-step diagnosis.
     debug : bool, optional
         Emit request/response detail to stderr.
     """
-
-    client, model, backend = build_client()
-
     if debug:
-        print(f"[debug] Backend: {backend}", file=sys.stderr)
-        print(f"[debug] Reasoning mode: {'ON' if reasoning else 'OFF'}", file=sys.stderr)
+        print(
+            f"[debug] Endpoint: {provider.endpoint.name} ({provider.endpoint.base_url})",
+            file=sys.stderr,
+        )
+        print(f"[debug] Model:    {provider.model}", file=sys.stderr)
+        print(
+            f"[debug] Reasoning control: {provider.profile.reasoning_control}",
+            file=sys.stderr,
+        )
+        print(
+            f"[debug] Reasoning mode: {'ON' if reasoning else 'OFF'}",
+            file=sys.stderr,
+        )
+
+    # Map the bool flag to the three-value intent the provider understands.
+    # We always send "on" or "off" explicitly — never "default" — because
+    # this orchestrator always has an opinion about reasoning. "default"
+    # is reserved for callers that want zero interference with the model's
+    # built-in behaviour (e.g. a future raw REPL mode or test harness).
+    reasoning_intent: ReasoningIntent = "on" if reasoning else "off"
 
     # ------------------------------------------------------------------
     # Step 1: Build the initial message list
@@ -254,51 +181,31 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
     ]
 
     # ------------------------------------------------------------------
-    # Step 2: Suppress thinking on llama.cpp (Orin)
-    #
-    # vLLM handles this via extra_body in _call_llm. llama.cpp manages
-    # thinking mode itself from the model's chat template and rejects an
-    # assistant pre-fill while thinking is active.
-    #
-    # Instead, we use Qwen3's /no_think prompt tag, prepended to the
-    # system message. The model treats this as an instruction to skip the
-    # reasoning phase regardless of its default thinking mode.
-    #
-    # This is NOT applied when reasoning=True — we want the model to
-    # think freely in that case.
+    # Step 2: First pass — send with tool definition
     # ------------------------------------------------------------------
-    if backend == "llamacpp" and not reasoning:
-        messages[0]["content"] = "/no_think\n\n" + messages[0]["content"]
-
-    # ------------------------------------------------------------------
-    # Step 3: First pass — send request with tool definition to the server
-    # ------------------------------------------------------------------
-    first_response = _call_llm(
-        client,
-        model,
-        backend,
+    first_response = provider.complete(
         messages,
-        reasoning,
-        debug,
-        "first",
-        include_tools=True,
+        tools=[TOOL_DEFINITION],
+        tool_choice="auto",
+        reasoning=reasoning_intent,
+        debug=debug,
+        label="first",
     )
     if first_response is None:
         return
 
     # ------------------------------------------------------------------
-    # Step 4: Inspect response — direct answer or tool call?
+    # Step 3: Inspect response — direct answer or tool call?
     # ------------------------------------------------------------------
     assistant_message = first_response.choices[0].message
     tool_calls = assistant_message.tool_calls or []
 
-    # Chain-of-thought text may accompany a tool call. Print it, but
-    # treat tool_calls as the controlling output.
+    # Chain-of-thought text may accompany a tool call. Print it to stderr.
     if assistant_message.content and tool_calls:
         print(f"[thinking] {assistant_message.content}", file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # Step 5: Direct answer — no tool call requested
+    # Step 4: Direct answer — no tool call requested
     # ------------------------------------------------------------------
     if not tool_calls:
         content = (assistant_message.content or "").strip()
@@ -309,7 +216,7 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
         return
 
     # ------------------------------------------------------------------
-    # Step 6: Reject multiple tool calls (outside minimal contract)
+    # Step 5: Reject multiple tool calls (outside minimal contract)
     # ------------------------------------------------------------------
     if len(tool_calls) > 1:
         _orchestrator_error(
@@ -319,7 +226,7 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
         return
 
     # ------------------------------------------------------------------
-    # Step 7: Validate the tool call before executing anything
+    # Step 6: Validate the tool call before executing anything
     # ------------------------------------------------------------------
     try:
         tool_name, args = validate_tool_call(
@@ -335,13 +242,19 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
         print(f"[debug] Validated tool call: {tool_name}({args})", file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # Step 8: Execute the tool
+    # Step 7: Execute the tool
     # ------------------------------------------------------------------
     arg_str = ", ".join(f"{k}={v}" for k, v in args.items())
     print(f"[tool call] {tool_name}({arg_str})")
 
     try:
         tool_result: str = TOOL_DISPATCH[tool_name](**args)
+    # Broad catch is intentional: tool failures must never crash the orchestrator.
+    # BLE001 is a ruff lint rule that warns against bare `except Exception` —
+    # we suppress it here because the wide net is the point.
+    except Exception as exc:  # noqa: BLE001
+        _orchestrator_error(f"Tool execution failed: {exc}")
+        return
     except Exception as exc:  # noqa: BLE001
         _orchestrator_error(f"Tool execution failed: {exc}")
         return
@@ -350,27 +263,8 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
         print(f"[debug] Tool result: {tool_result!r}", file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # Step 9: Inject assistant message + tool result into conversation
+    # Step 8: Inject assistant message + tool result into conversation
     # ------------------------------------------------------------------
-    # Why append *both* messages?
-    #
-    # The model does not call Python directly. Instead, the orchestrator
-    # maintains a conversation transcript.
-    #
-    # Before the first request:
-    #   system    -> sets behaviour
-    #   user      -> asks the question
-    #   assistant -> (llamacpp only, no-think pre-fill)
-    #
-    # After the first model pass:
-    #   assistant -> proposes a tool call
-    #
-    # After tool execution:
-    #   tool -> returns the tool result associated with that tool_call_id
-    #
-    # The second model pass sees this updated transcript and can turn the
-    # tool result into a final natural-language answer for the user.
-
     messages.append(assistant_message)
     messages.append(
         {
@@ -381,23 +275,19 @@ def run_turn(user_input: str, reasoning: bool = False, debug: bool = False) -> N
     )
 
     # ------------------------------------------------------------------
-    # Step 10: Second pass — send conversation with tool result to server
+    # Step 9: Second pass — send conversation with tool result
     # ------------------------------------------------------------------
-    second_response = _call_llm(
-        client,
-        model,
-        backend,
+    second_response = provider.complete(
         messages,
-        reasoning,
-        debug,
-        "second",
-        include_tools=False,
+        reasoning=reasoning_intent,
+        debug=debug,
+        label="second",
     )
     if second_response is None:
         return
 
     # ------------------------------------------------------------------
-    # Step 11: Print final answer
+    # Step 10: Print final answer
     # ------------------------------------------------------------------
     final_message = second_response.choices[0].message
     final_content = (final_message.content or "").strip()

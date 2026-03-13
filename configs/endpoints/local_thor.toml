@@ -1,0 +1,11 @@
+# configs/endpoints/local_thor.toml
+#
+# Jetson Thor — vLLM serving safetensor models.
+# Server started via scripts/qwen3-thor.sh or scripts/nemotron3-thor.sh.
+# Default port is 8000 (vLLM default).
+
+name            = "local_thor"
+provider_type   = "openai_compatible"
+base_url        = "http://127.0.0.1:8000/v1"
+api_key_env     = "VLLM_API_KEY"
+default_model   = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"

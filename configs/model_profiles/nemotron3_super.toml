@@ -1,0 +1,19 @@
+# configs/model_profiles/nemotron3_super.toml
+#
+# NVIDIA Nemotron-3-Super-120B-A12B-NVFP4 served via vLLM on Jetson Thor.
+#
+# Reasoning control: request_kwargs
+#   Uses the same enable_thinking mechanism as the Nano model — toggled
+#   via extra_body.chat_template_kwargs.enable_thinking. The Super model
+#   uses its own super_v3 reasoning parser (set in nemotron3-super-thor.sh)
+#   but the kwargs path seen by the provider is identical.
+#
+# Tool call parser: qwen3_coder (set in nemotron3-super-thor.sh)
+#
+# Recommended inference settings (from model card):
+#   temperature=1.0, top_p=0.95 across all tasks.
+
+name                    = "nemotron3_super"
+canonical_model         = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+reasoning_control       = "request_kwargs"
+reasoning_kwargs_path   = "extra_body.chat_template_kwargs.enable_thinking"
