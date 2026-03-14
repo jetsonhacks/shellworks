@@ -1,17 +1,72 @@
+"""
+directory: src/shellworks/orchestrator/
+file:      validation.py
+"""
+
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Protocol
 
-from openai.types.chat import ChatCompletionMessageToolCall
+
+# ---------------------------------------------------------------------------
+# Structural types for tool call objects
+# ---------------------------------------------------------------------------
+
+class ToolCallFunction(Protocol):
+    """
+    The two fields validate_tool_call reads off tool_call.function.
+
+    Public so that test stubs can annotate their function attribute
+    with this type explicitly, which satisfies Pyright's invariance
+    check on mutable Protocol attributes.
+    """
+    name: str
+    arguments: str
+
+
+class ToolCallLike(Protocol):
+    """
+    Structural type for any object that looks like a tool call.
+
+    validate_tool_call only reads tool_call.function.name and
+    tool_call.function.arguments. Using a Protocol here instead of
+    the concrete OpenAI SDK type means:
+
+      - validation.py has no dependency on the OpenAI SDK
+      - the validator works with any conforming object, including
+        lightweight stubs in tests
+
+    The real OpenAI ChatCompletionMessageToolCall satisfies this
+    Protocol structurally, so no cast is needed at call sites.
+
+    Test stubs must annotate their function attribute explicitly as
+    ToolCallFunction to satisfy Pyright's invariance check on mutable
+    attributes:
+
+        class _StubToolCall:
+            function: ToolCallFunction
+            def __init__(self, name, arguments):
+                self.function = _StubFunction(name, arguments)
+    """
+    function: ToolCallFunction
+
+
+# ---------------------------------------------------------------------------
+# Exception
+# ---------------------------------------------------------------------------
 
 class ValidationError(Exception):
     """Raised when a tool call fails orchestrator validation."""
 
 
+# ---------------------------------------------------------------------------
+# Validator
+# ---------------------------------------------------------------------------
+
 def validate_tool_call(
-    tool_call: ChatCompletionMessageToolCall,
+    tool_call: ToolCallLike,
     *,
     allowed_tools: set[str],
     required_args: Mapping[str, type | tuple[type, ...]],
@@ -37,8 +92,12 @@ def validate_tool_call(
 
     Parameters
     ----------
-    tool_call :
-        The tool call object from ``response.choices[0].message.tool_calls[n]``.
+    tool_call : ToolCallLike
+        Any object with a .function.name (str) and .function.arguments
+        (str) attribute. The real OpenAI ChatCompletionMessageToolCall
+        satisfies this structurally. Concrete test stubs work without
+        any cast provided their function attribute is annotated as
+        ToolCallFunction.
     allowed_tools : set[str]
         Names the orchestrator is willing to dispatch. Anything else is
         rejected before arguments are even parsed.

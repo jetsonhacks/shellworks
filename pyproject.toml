@@ -1,7 +1,7 @@
 [project]
 name = "shellworks"
 version = "0.1.0"
-description = "Add your description here"
+description = "A minimal local terminal assistant for learning LLM tool calling from first principles."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

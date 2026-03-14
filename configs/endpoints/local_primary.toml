@@ -1,0 +1,26 @@
+# configs/endpoints/local_primary.toml
+#
+# Default endpoint — resolved when SHELLWORKS_ENDPOINT is not set.
+#
+# This file is a starting point. Edit base_url and default_model to
+# match whatever server you have running locally.
+#
+# Common setups:
+#
+#   Jetson Thor, vLLM:
+#     base_url     = "http://127.0.0.1:8000/v1"
+#     default_model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
+#
+#   Jetson Orin Nano, llama.cpp:
+#     base_url     = "http://127.0.0.1:8080/v1"
+#     default_model = "unsloth_Qwen3.5-4B-GGUF_Qwen3.5-4B-Q4_K_M.gguf"
+#
+# For dedicated configs per machine, set SHELLWORKS_ENDPOINT in your
+# .env file and point it at local_thor or local_orin instead.
+# We use llama.cpp 
+
+name            = "local_primary"
+provider_type   = "openai_compatible"
+base_url        = "http://127.0.0.1:8080/v1"
+api_key_env     = "LOCAL_LLM_API_KEY"
+default_model   = "unsloth_Qwen3.5-4B-GGUF_Qwen3.5-4B-Q4_K_M.gguf"

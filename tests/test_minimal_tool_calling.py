@@ -2,269 +2,103 @@
 directory: tests/
 file:      test_minimal_tool_calling.py
 
-Unit tests for orchestrator validation and tool dispatch.
+Integration-style tests for the run_turn orchestrator.
 
-These tests do NOT require a running vLLM server. They test the deterministic
-parts of the system — validation, dispatch, and error handling — by working
-directly with the orchestrator functions and the tool itself.
+These tests do NOT require a running LLM server. They test the
+deterministic orchestrator behavior by injecting a mock provider
+and observing what run_turn does with the responses it receives.
 
-Test cases (from the implementation note):
-  1. valid tool call runs correctly
-  2. unknown tool name is rejected
-  3. malformed JSON is rejected
-  4. multiple tool calls are rejected
-  5. tool exception becomes ERROR: ...
-  (plus extras for completeness)
+Scope
+-----
+This file tests run_turn() behavior only — the two-pass flow, the
+responses to model outputs, and the error paths.
+
+Validator unit tests (the six checks inside validate_tool_call) live in
+test_validation.py and are not duplicated here.
+
+Arithmetic unit tests (add_numbers) live here because they are the
+only tool Lesson 1 has and do not require a mock.
+
+Mock strategy
+-------------
+run_turn() takes a provider as a required argument. Tests pass a
+MagicMock provider whose complete() method returns pre-built
+response objects. No patching of module-level names is needed.
 """
 
 from __future__ import annotations
 
 import json
-import sys
-import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Import the units under test
-# ---------------------------------------------------------------------------
 from shellworks.orchestrator.minimal_tool_calling import (
     ALLOWED_TOOLS,
-    ValidationError,
-    _orchestrator_error,
-    validate_tool_call,
     run_turn,
+    _orchestrator_error,
 )
 from shellworks.tools.arithmetic import add_numbers
 
 
 # ---------------------------------------------------------------------------
-# Helpers for building mock tool call objects
+# Helpers
 # ---------------------------------------------------------------------------
 
-def make_tool_call(name: str, arguments: str | dict, call_id: str = "call_test_001"):
-    """Build a minimal mock tool call that matches the OpenAI SDK shape."""
-    if isinstance(arguments, dict):
-        arguments = json.dumps(arguments)
-
-    tool_call = MagicMock()
-    tool_call.id = call_id
-    tool_call.function.name = name
-    tool_call.function.arguments = arguments
-    return tool_call
+def _make_tool_call(name: str, arguments: dict, call_id: str = "call_test_001") -> MagicMock:
+    """Build a minimal mock tool call matching the OpenAI SDK shape."""
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function.name = name
+    tc.function.arguments = json.dumps(arguments)
+    return tc
 
 
-# ---------------------------------------------------------------------------
-# 1. Valid tool call runs correctly
-# ---------------------------------------------------------------------------
-
-class TestValidateToolCallValid:
-    def test_integer_args(self):
-        tc = make_tool_call("add_numbers", {"a": 2, "b": 3})
-        name, args = validate_tool_call(tc)
-        assert name == "add_numbers"
-        assert args["a"] == 2
-        assert args["b"] == 3
-
-    def test_float_args(self):
-        tc = make_tool_call("add_numbers", {"a": 1.5, "b": 2.5})
-        name, args = validate_tool_call(tc)
-        assert args["a"] == 1.5
-        assert args["b"] == 2.5
-
-    def test_negative_args(self):
-        tc = make_tool_call("add_numbers", {"a": -10, "b": 5})
-        name, args = validate_tool_call(tc)
-        assert args["a"] == -10
-        assert args["b"] == 5
-
-    def test_zero_args(self):
-        tc = make_tool_call("add_numbers", {"a": 0, "b": 0})
-        name, args = validate_tool_call(tc)
-        assert args["a"] == 0
+def _make_response(tool_calls: list | None = None, content: str | None = None) -> MagicMock:
+    """Build a mock completion response."""
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls or []
+    choice = MagicMock()
+    choice.message = msg
+    response = MagicMock()
+    response.choices = [choice]
+    return response
 
 
-# ---------------------------------------------------------------------------
-# 2. Unknown tool name is rejected
-# ---------------------------------------------------------------------------
-
-class TestValidateToolCallUnknownName:
-    def test_unknown_name_raises(self):
-        tc = make_tool_call("delete_files", {"a": 1, "b": 2})
-        with pytest.raises(ValidationError, match="Unknown tool name"):
-            validate_tool_call(tc)
-
-    def test_empty_name_raises(self):
-        tc = make_tool_call("", {"a": 1, "b": 2})
-        with pytest.raises(ValidationError, match="Unknown tool name"):
-            validate_tool_call(tc)
-
-    def test_similar_name_raises(self):
-        # 'add_number' (missing 's') must not pass
-        tc = make_tool_call("add_number", {"a": 1, "b": 2})
-        with pytest.raises(ValidationError, match="Unknown tool name"):
-            validate_tool_call(tc)
-
-
-# ---------------------------------------------------------------------------
-# 3. Malformed JSON is rejected
-# ---------------------------------------------------------------------------
-
-class TestValidateToolCallMalformedJSON:
-    def test_invalid_json_raises(self):
-        tc = make_tool_call("add_numbers", "{not valid json}")
-        with pytest.raises(ValidationError, match="not valid JSON"):
-            validate_tool_call(tc)
-
-    def test_json_array_raises(self):
-        # Valid JSON but not an object
-        tc = make_tool_call("add_numbers", "[1, 2]")
-        with pytest.raises(ValidationError, match="must be a JSON object"):
-            validate_tool_call(tc)
-
-    def test_json_null_raises(self):
-        tc = make_tool_call("add_numbers", "null")
-        with pytest.raises(ValidationError, match="must be a JSON object"):
-            validate_tool_call(tc)
-
-    def test_empty_string_raises(self):
-        tc = make_tool_call("add_numbers", "")
-        with pytest.raises(ValidationError, match="not valid JSON"):
-            validate_tool_call(tc)
-
-
-# ---------------------------------------------------------------------------
-# 4. Multiple tool calls are rejected
-# ---------------------------------------------------------------------------
-
-class TestMultipleToolCalls:
+def _make_provider(*responses) -> MagicMock:
     """
-    The run_turn function rejects multiple tool calls before validation.
-    We test this by providing a mock client that returns two tool calls.
+    Build a mock provider whose complete() returns the given responses
+    in sequence, one per call.
     """
-
-    def _make_response_with_n_tool_calls(self, n: int):
-        """Build a mock first_response containing n tool calls."""
-        tool_calls = [
-            make_tool_call("add_numbers", {"a": i, "b": i}, f"call_{i}")
-            for i in range(n)
-        ]
-        msg = MagicMock()
-        msg.content = None
-        msg.tool_calls = tool_calls
-
-        choice = MagicMock()
-        choice.message = msg
-
-        response = MagicMock()
-        response.choices = [choice]
-        return response
-
-    def test_two_tool_calls_print_error(self, capsys):
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = (
-            self._make_response_with_n_tool_calls(2)
-        )
-
-        with patch("shellworks.orchestrator.minimal_tool_calling.build_client", return_value=mock_client):
-            run_turn("add 1 and 2 and also 3 and 4")
-
-        captured = capsys.readouterr()
-        assert "[orchestrator error]" in captured.err
-        assert "2 tool calls" in captured.err
-
-    def test_one_tool_call_does_not_error_for_count(self, capsys):
-        """Sanity check: a single tool call does NOT trigger the multi-call error."""
-        single = self._make_response_with_n_tool_calls(1)
-
-        # The second pass needs a mock too; we don't care about its output here
-        final_msg = MagicMock()
-        final_msg.content = "The answer is 5."
-        final_msg.tool_calls = []
-        final_choice = MagicMock()
-        final_choice.message = final_msg
-        final_response = MagicMock()
-        final_response.choices = [final_choice]
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = [single, final_response]
-
-        with patch("shellworks.orchestrator.minimal_tool_calling.build_client", return_value=mock_client):
-            run_turn("what is 2 plus 3")
-
-        captured = capsys.readouterr()
-        # No multi-call error
-        assert "2 tool calls" not in captured.err
+    provider = MagicMock()
+    provider.endpoint.name = "mock_endpoint"
+    provider.endpoint.base_url = "http://localhost:9999/v1"
+    provider.model = "mock-model"
+    provider.profile.reasoning_control = "none"
+    provider.complete.side_effect = list(responses)
+    return provider
 
 
 # ---------------------------------------------------------------------------
-# 5. Tool exception becomes ERROR: ...
-# ---------------------------------------------------------------------------
-
-class TestToolExecutionException:
-    """
-    If the tool raises an exception after passing validation, the result
-    injected into the conversation should be 'ERROR: <message>'.
-    """
-
-    def test_tool_exception_becomes_error_string(self, capsys):
-        # Patch add_numbers to raise
-        def boom(a, b):
-            raise ZeroDivisionError("division by zero")
-
-        # Build a mock first response with a valid single tool call
-        tc = make_tool_call("add_numbers", {"a": 0, "b": 0})
-        first_msg = MagicMock()
-        first_msg.content = None
-        first_msg.tool_calls = [tc]
-        first_choice = MagicMock()
-        first_choice.message = first_msg
-        first_response = MagicMock()
-        first_response.choices = [first_choice]
-
-        # Second response (model reads the ERROR: result)
-        final_msg = MagicMock()
-        final_msg.content = "There was an error computing your result."
-        final_msg.tool_calls = []
-        final_choice = MagicMock()
-        final_choice.message = final_msg
-        final_response = MagicMock()
-        final_response.choices = [final_choice]
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = [first_response, final_response]
-
-        with patch("shellworks.orchestrator.minimal_tool_calling.build_client", return_value=mock_client):
-            with patch.dict("shellworks.orchestrator.minimal_tool_calling.TOOL_DISPATCH", {"add_numbers": boom}):
-                run_turn("what is 0 divided by 0")
-
-        # The second call to the model should have received an ERROR: result
-        second_call_args = mock_client.chat.completions.create.call_args_list[1]
-        messages_sent = second_call_args.kwargs["messages"]
-        tool_result_message = next(
-            m for m in messages_sent if isinstance(m, dict) and m.get("role") == "tool"
-        )
-        assert tool_result_message["content"].startswith("ERROR:")
-
-
-# ---------------------------------------------------------------------------
-# Arithmetic tool unit tests
+# Arithmetic tool — no mock needed
 # ---------------------------------------------------------------------------
 
 class TestAddNumbers:
-    def test_adds_integers(self):
+    def test_adds_integers(self) -> None:
         assert add_numbers(2, 3) == "5"
 
-    def test_adds_floats(self):
+    def test_adds_floats(self) -> None:
         assert add_numbers(1.5, 2.5) == "4.0"
 
-    def test_adds_negative(self):
+    def test_adds_negative(self) -> None:
         assert add_numbers(-1, 1) == "0"
 
-    def test_returns_string(self):
-        result = add_numbers(10, 20)
-        assert isinstance(result, str)
+    def test_subtraction_via_negative_operand(self) -> None:
+        assert add_numbers(10, -3) == "7"
+
+    def test_returns_string(self) -> None:
+        assert isinstance(add_numbers(10, 20), str)
 
 
 # ---------------------------------------------------------------------------
@@ -272,50 +106,184 @@ class TestAddNumbers:
 # ---------------------------------------------------------------------------
 
 class TestAllowlist:
-    def test_allowlist_contains_only_add_numbers(self):
+    def test_contains_only_add_numbers(self) -> None:
         assert ALLOWED_TOOLS == {"add_numbers"}
 
-    def test_allowlist_is_a_set(self):
+    def test_is_a_set(self) -> None:
         assert isinstance(ALLOWED_TOOLS, set)
 
 
 # ---------------------------------------------------------------------------
-# Missing required argument
+# Step 4: Direct answer path — model returns text, no tool call
 # ---------------------------------------------------------------------------
 
-class TestMissingArguments:
-    def test_missing_a(self):
-        tc = make_tool_call("add_numbers", {"b": 3})
-        with pytest.raises(ValidationError, match="Missing required argument 'a'"):
-            validate_tool_call(tc)
+class TestDirectAnswerPath:
+    def test_direct_text_answer_is_printed(self, capsys: pytest.CaptureFixture) -> None:
+        provider = _make_provider(
+            _make_response(content="I can only add or subtract numbers.")
+        )
+        run_turn("what is the capital of France?", provider=provider)
+        captured = capsys.readouterr()
+        assert "I can only add or subtract numbers." in captured.out
 
-    def test_missing_b(self):
-        tc = make_tool_call("add_numbers", {"a": 3})
-        with pytest.raises(ValidationError, match="Missing required argument 'b'"):
-            validate_tool_call(tc)
+    def test_empty_direct_response_prints_orchestrator_error(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        provider = _make_provider(_make_response(content=""))
+        run_turn("hello", provider=provider)
+        captured = capsys.readouterr()
+        assert "[orchestrator error]" in captured.err
 
-    def test_missing_both(self):
-        tc = make_tool_call("add_numbers", {})
-        with pytest.raises(ValidationError, match="Missing required argument"):
-            validate_tool_call(tc)
+    def test_provider_called_once_for_direct_answer(self) -> None:
+        provider = _make_provider(
+            _make_response(content="No tool needed.")
+        )
+        run_turn("hello", provider=provider)
+        assert provider.complete.call_count == 1
 
 
 # ---------------------------------------------------------------------------
-# Wrong argument types
+# Step 5: Multiple tool calls rejected
 # ---------------------------------------------------------------------------
 
-class TestWrongArgumentTypes:
-    def test_string_a_raises(self):
-        tc = make_tool_call("add_numbers", {"a": "two", "b": 3})
-        with pytest.raises(ValidationError, match="must be a number"):
-            validate_tool_call(tc)
+class TestMultipleToolCalls:
+    def test_two_tool_calls_print_orchestrator_error(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        two_calls = [
+            _make_tool_call("add_numbers", {"a": 1, "b": 2}, "call_0"),
+            _make_tool_call("add_numbers", {"a": 3, "b": 4}, "call_1"),
+        ]
+        provider = _make_provider(_make_response(tool_calls=two_calls))
+        run_turn("add 1+2 and also 3+4", provider=provider)
+        captured = capsys.readouterr()
+        assert "[orchestrator error]" in captured.err
+        assert "2 tool calls" in captured.err
 
-    def test_list_b_raises(self):
-        tc = make_tool_call("add_numbers", {"a": 1, "b": [3]})
-        with pytest.raises(ValidationError, match="must be a number"):
-            validate_tool_call(tc)
+    def test_two_tool_calls_make_no_second_provider_call(self) -> None:
+        two_calls = [
+            _make_tool_call("add_numbers", {"a": 1, "b": 2}, "call_0"),
+            _make_tool_call("add_numbers", {"a": 3, "b": 4}, "call_1"),
+        ]
+        provider = _make_provider(_make_response(tool_calls=two_calls))
+        run_turn("add 1+2 and also 3+4", provider=provider)
+        assert provider.complete.call_count == 1
 
-    def test_null_b_raises(self):
-        tc = make_tool_call("add_numbers", {"a": 1, "b": None})
-        with pytest.raises(ValidationError, match="must be a number"):
-            validate_tool_call(tc)
+
+# ---------------------------------------------------------------------------
+# Steps 6 + 7 + 8 + 9 + 10: Happy path — valid tool call, two passes
+# ---------------------------------------------------------------------------
+
+class TestHappyPath:
+    def _make_happy_provider(self, final_content: str = "The answer is 5.") -> MagicMock:
+        first = _make_response(
+            tool_calls=[_make_tool_call("add_numbers", {"a": 2, "b": 3})]
+        )
+        second = _make_response(content=final_content)
+        return _make_provider(first, second)
+
+    def test_final_answer_is_printed(self, capsys: pytest.CaptureFixture) -> None:
+        provider = self._make_happy_provider("The answer is 5.")
+        run_turn("what is 2 plus 3?", provider=provider)
+        assert "The answer is 5." in capsys.readouterr().out
+
+    def test_tool_call_label_printed_to_stdout(self, capsys: pytest.CaptureFixture) -> None:
+        provider = self._make_happy_provider()
+        run_turn("what is 2 plus 3?", provider=provider)
+        assert "[tool call] add_numbers" in capsys.readouterr().out
+
+    def test_provider_called_twice(self) -> None:
+        provider = self._make_happy_provider()
+        run_turn("what is 2 plus 3?", provider=provider)
+        assert provider.complete.call_count == 2
+
+    def test_second_call_includes_tool_result_message(self) -> None:
+        provider = self._make_happy_provider()
+        run_turn("what is 2 plus 3?", provider=provider)
+        second_call_messages = provider.complete.call_args_list[1][0][0]
+        roles = [m.get("role") if isinstance(m, dict) else m.role
+                 for m in second_call_messages]
+        assert "tool" in roles
+
+    def test_tool_result_content_is_correct_sum(self) -> None:
+        provider = self._make_happy_provider()
+        run_turn("what is 2 plus 3?", provider=provider)
+        second_call_messages = provider.complete.call_args_list[1][0][0]
+        tool_msg = next(
+            m for m in second_call_messages
+            if isinstance(m, dict) and m.get("role") == "tool"
+        )
+        assert tool_msg["content"] == "5"
+
+
+# ---------------------------------------------------------------------------
+# Step 7: Tool execution failure — orchestrator error, no second pass
+# ---------------------------------------------------------------------------
+
+class TestToolExecutionFailure:
+    """
+    When the tool itself raises an exception after passing validation,
+    the orchestrator prints an error to stderr and stops. It does NOT
+    make a second provider call.
+    """
+
+    def _make_provider_with_failing_tool(self) -> tuple[MagicMock, MagicMock]:
+        tc = _make_tool_call("add_numbers", {"a": 1, "b": 2})
+        first = _make_response(tool_calls=[tc])
+        provider = _make_provider(first)
+        return provider, tc
+
+    def test_tool_failure_prints_orchestrator_error(
+        self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider, _ = self._make_provider_with_failing_tool()
+
+        def boom(a: float, b: float) -> str:
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(
+            "shellworks.orchestrator.minimal_tool_calling.TOOL_DISPATCH",
+            {"add_numbers": boom},
+        )
+        run_turn("add 1 and 2", provider=provider)
+        captured = capsys.readouterr()
+        assert "[orchestrator error]" in captured.err
+        assert "Tool execution failed" in captured.err
+
+    def test_tool_failure_makes_no_second_provider_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider, _ = self._make_provider_with_failing_tool()
+
+        def boom(a: float, b: float) -> str:
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(
+            "shellworks.orchestrator.minimal_tool_calling.TOOL_DISPATCH",
+            {"add_numbers": boom},
+        )
+        run_turn("add 1 and 2", provider=provider)
+        assert provider.complete.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Connection failure — provider returns None
+# ---------------------------------------------------------------------------
+
+class TestConnectionFailure:
+    def test_none_first_response_is_handled_gracefully(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        provider = _make_provider(None)
+        # Should not raise — connection failure is handled inside run_turn
+        run_turn("add 1 and 2", provider=provider)
+
+    def test_none_second_response_is_handled_gracefully(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        first = _make_response(
+            tool_calls=[_make_tool_call("add_numbers", {"a": 1, "b": 2})]
+        )
+        provider = _make_provider(first, None)
+        run_turn("add 1 and 2", provider=provider)
+        # Should not raise

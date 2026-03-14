@@ -2,9 +2,9 @@
 directory: src/shellworks/
 file:      app.py
 
-ShellworksApp — the chat interface.
+ShellworksApp — the interactive shell loop.
 
-
+Lesson 1.1 changes
 ------------------
 build_provider() is called once at startup. The resulting provider is
 passed into run_turn each turn. This separates infrastructure setup
@@ -17,7 +17,9 @@ the .toml extension):
   SHELLWORKS_ENDPOINT=local_thor   uv run shellworks
   SHELLWORKS_ENDPOINT=local_orin   uv run shellworks
 
-If unset, the name "local_primary" is used.
+If unset, the name "local_primary" is used, which resolves to
+configs/endpoints/local_primary.toml. That file should point at
+whichever server is running locally.
 
 The active model defaults to the endpoint's default_model. Override it
 with SHELLWORKS_MODEL for a single run without changing the saved config.
@@ -26,7 +28,8 @@ with SHELLWORKS_MODEL for a single run without changing the saved config.
 import sys
 import readline  # noqa: F401 — imported for side effects (enables arrow keys, history)
 
-from shellworks.llm.provider import OpenAICompatibleProvider, build_provider
+
+from shellworks.llm.provider import build_provider
 from shellworks.orchestrator.minimal_tool_calling import run_turn
 
 
@@ -35,7 +38,7 @@ class ShellworksApp:
         self.debug = debug
 
     def run(self) -> None:
-        print("shellworks — Tool calling from First Principles")
+        print("shellworks — Lesson 1.1: Endpoints and Model Profiles")
         print("Type your request and press Enter. Type /help for available commands.\n")
 
         try:
@@ -45,9 +48,18 @@ class ShellworksApp:
             sys.exit(1)
 
         if self.debug:
-            print(f"[debug] Loaded endpoint:      {provider.endpoint.name}", file=sys.stderr)
-            print(f"[debug] Active model:         {provider.model}", file=sys.stderr)
-            print(f"[debug] Reasoning control:    {provider.profile.reasoning_control}", file=sys.stderr)
+            print(
+                f"[debug] Loaded endpoint:   {provider.endpoint.name}",
+                file=sys.stderr,
+            )
+            print(
+                f"[debug] Active model:      {provider.model}",
+                file=sys.stderr,
+            )
+            print(
+                f"[debug] Reasoning control: {provider.profile.reasoning_control}",
+                file=sys.stderr,
+            )
             print()
 
         reasoning = False  # session default

@@ -1,0 +1,29 @@
+# configs/model_profiles/qwen3_5_4b_gguf.toml
+#
+# Qwen3.5-4B-Q4_K_M served via llama.cpp.
+#
+# IMPORTANT: Qwen3.5 does NOT support Qwen3's /think and /no_think prompt
+# markers. Reasoning is controlled exclusively via the chat_template_kwargs
+# mechanism in the API request body.
+#
+# llama.cpp (recent builds) forwards chat_template_kwargs to the Jinja2
+# template renderer, which honors enable_thinking. Verify with --debug on
+# first run: the outbound extra_body should appear in the debug output and
+# the model should not emit <think>...</think> blocks when reasoning=False.
+#
+# If llama.cpp silently ignores chat_template_kwargs on the installed build,
+# the model will always think. Upgrading llama.cpp is the fix — not adding
+# a prompt marker.
+#
+# Canonical model name: llama.cpp reports the model name from GGUF metadata.
+# Verify the actual name with: curl http://localhost:8080/v1/models
+# Update canonical_model here to match if it differs from the value below.
+#
+# Tool call parser: not set here — llama.cpp uses its own grammar-based tool
+# calling. The --jinja flag in the launcher script enables the chat template's
+# built-in tool call format.
+
+name                    = "qwen3_5_4b_gguf"
+canonical_model         = "unsloth_Qwen3.5-4B-GGUF_Qwen3.5-4B-Q4_K_M.gguf"
+reasoning_control       = "request_kwargs"
+reasoning_kwargs_path   = "extra_body.chat_template_kwargs.enable_thinking"
