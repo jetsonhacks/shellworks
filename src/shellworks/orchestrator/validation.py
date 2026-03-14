@@ -74,7 +74,7 @@ def validate_tool_call(
     """
     Validate a tool call object from the model response.
 
-    This function enforces a minimal argument contract for Lesson 1.
+    This function enforces a minimal argument contract.
     It is useful infrastructure, but it should not be treated as a
     complete security boundary.
 
@@ -86,7 +86,7 @@ def validate_tool_call(
       5. All required keys declared by the caller are present.
       6. Each required key holds a value of the declared type.
 
-    This is intentionally minimal validation for Lesson 1.
+    This is intentionally minimal validation.
     It does not yet enforce numeric ranges or validate against a formal
     schema. Later lessons can tighten those rules as the system grows.
 

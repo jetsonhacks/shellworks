@@ -4,7 +4,6 @@ file:      app.py
 
 ShellworksApp — the interactive shell loop.
 
-Lesson 1.1 changes
 ------------------
 build_provider() is called once at startup. The resulting provider is
 passed into run_turn each turn. This separates infrastructure setup
@@ -38,7 +37,7 @@ class ShellworksApp:
         self.debug = debug
 
     def run(self) -> None:
-        print("shellworks — Lesson 1.1: Endpoints and Model Profiles")
+        print("Shellworks — Agentic AI from First Principles")
         print("Type your request and press Enter. Type /help for available commands.\n")
 
         try:

@@ -2,7 +2,7 @@
 directory: src/shellworks/
 file:      main.py
 
-Entry point for the shellworks Lesson 1.1 demo.
+Entry point for the shellworks demo.
 
 Usage:
     uv run shellworks
@@ -35,7 +35,7 @@ load_dotenv()
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Lesson 1.1: Minimal tool calling with endpoints and model profiles."
+        description="Minimal tool calling with endpoints and model profiles."
     )
     parser.add_argument(
         "--debug",

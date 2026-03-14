@@ -2,9 +2,8 @@
 directory: src/shellworks/orchestrator/
 file:      minimal_tool_calling.py
 
-The main orchestrator for Lesson 1 / 1.1.
+The main orchestrator.
 
-Lesson 1.1 changes
 ------------------
 The orchestrator no longer knows about:
   - server backends (vllm vs llama.cpp)
@@ -252,9 +251,6 @@ def run_turn(
     # Broad catch is intentional: tool failures must never crash the orchestrator.
     # BLE001 is a ruff lint rule that warns against bare `except Exception` —
     # we suppress it here because the wide net is the point.
-    except Exception as exc:  # noqa: BLE001
-        _orchestrator_error(f"Tool execution failed: {exc}")
-        return
     except Exception as exc:  # noqa: BLE001
         _orchestrator_error(f"Tool execution failed: {exc}")
         return
