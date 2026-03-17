@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # install/build_llama_cpp.sh
 #
-# Builds llama.cpp with CUDA support on the Jetson Orin Nano.
+# Builds llama.cpp with CUDA and OpenSSL support on the Jetson Orin Nano.
+# OpenSSL is required for the --hf-repo / --hf-file flags to download
+# models directly from HuggingFace.
+#
 # Run this once. The resulting llama-server binary lives at:
 #   llama.cpp/build/bin/llama-server
 #
@@ -31,6 +34,12 @@ for cmd in git cmake nvcc; do
     fi
 done
 
+# OpenSSL dev files are required for --hf-repo / --hf-file HTTPS downloads.
+if ! pkg-config --exists openssl 2>/dev/null; then
+    echo "OpenSSL development files not found. Installing libssl-dev..."
+    sudo apt install -y libssl-dev
+fi
+
 echo "All prerequisites found."
 echo ""
 
@@ -53,10 +62,11 @@ echo ""
 # ---------------------------------------------------------------------------
 # Configure
 # ---------------------------------------------------------------------------
-echo "Configuring build with CUDA support..."
+echo "Configuring build with CUDA and OpenSSL support..."
 
 cmake -B build \
     -DGGML_CUDA=ON \
+    -DLLAMA_OPENSSL=ON \
     -DCMAKE_BUILD_TYPE=Release
 
 echo ""
@@ -86,7 +96,7 @@ if [[ -f "${BINARY}" ]]; then
     echo "  sudo ln -sf ${BINARY} /usr/local/bin/llama-server"
     echo ""
     echo "Then start the server with:"
-    echo "  ./launcher/llama_server.sh"
+    echo "  ./scripts/llama_server.sh"
 else
     echo ""
     echo "Error: build completed but llama-server binary not found at ${BINARY}." >&2
